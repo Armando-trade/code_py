@@ -8,4 +8,4 @@ plotly
 lxml
 html5lib
 beautifulsoup4
-TA-Lib
+ta
