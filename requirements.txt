@@ -5,3 +5,6 @@ ta
 scikit-learn
 streamlit
 plotly
+lxml
+html5lib
+beautifulsoup4
