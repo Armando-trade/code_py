@@ -86,29 +86,23 @@ def get_data(ticker, period="3mo", interval="1d"):
         logger.warning(f"Download error {ticker}: {e}")
         return None
 
-def add_indicators(df):
-    df = df.copy()
-    close = df['Close'].astype(float).fillna(method='ffill').fillna(method='bfill')
-    high = df['High'].astype(float).fillna(method='ffill').fillna(method='bfill')
-    low = df['Low'].astype(float).fillna(method='ffill').fillna(method='bfill')
+def analyze_ticker(ticker, period, interval):
+    df = get_data(ticker, period=period, interval=interval)
+    if df is None or df.empty:
+        return None
+    
+    df = add_indicators(df)  # chiama la funzione esterna corretta
 
-    # RSI
-    rsi_indicator = ta.momentum.RSIIndicator(close=close, window=14, fillna=True)
-    df['RSI'] = rsi_indicator.rsi()
+    prediction = predict_growth(df)
+    risk = classify_risk(df)
+    signal = generate_signal(df)
 
-    # SMA50
-    df['SMA50'] = close.rolling(window=50, min_periods=1).mean()
-
-    # MACD
-    macd_indicator = ta.trend.MACD(close=close, window_slow=26, window_fast=12, window_sign=9, fillna=True)
-    df['MACD'] = macd_indicator.macd()
-    df['MACD_signal'] = macd_indicator.macd_signal()
-
-    # ATR
-    atr_indicator = ta.volatility.AverageTrueRange(high=high, low=low, close=close, window=14, fillna=True)
-    df['ATR'] = atr_indicator.average_true_range()
-
-    return df
+    return {
+        'Ticker': ticker,
+        'Prediction (%)': prediction,
+        'Risk': risk,
+        'Signal': signal,
+    }
 
 def predict_growth(df):
     df_tail = df.tail(10).dropna(subset=['Close'])
