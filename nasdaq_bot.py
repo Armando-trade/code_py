@@ -78,6 +78,9 @@ def get_data(ticker, period="3mo", interval="1d"):
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False)
         df.dropna(inplace=True)
+        if 'Close' not in df.columns:
+            logger.warning(f"'Close' column missing in data for {ticker}")
+            return None
         if len(df) < 50:
             logger.warning(f"Not enough data for {ticker}")
             return None
@@ -87,54 +90,51 @@ def get_data(ticker, period="3mo", interval="1d"):
         return None
 
 def add_indicators(df):
-    if not isinstance(df, pd.DataFrame):
-        logger.error(f"add_indicators: input not a DataFrame but {type(df)}")
-        return df
-    required_cols = ['Close', 'High', 'Low']
-    if not all(col in df.columns for col in required_cols):
-        logger.error(f"add_indicators: missing required columns {required_cols} in df.columns {df.columns}")
-        return df
-
     df = df.copy()
-    try:
-        close = pd.to_numeric(df['Close'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
-        high = pd.to_numeric(df['High'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
-        low = pd.to_numeric(df['Low'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
-    except Exception as e:
-        logger.error(f"Error converting columns to numeric: {e}")
-        return df
+
+    # Conversione sicura in Series 1D con valori numerici
+    close = pd.to_numeric(df['Close'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
+    high = pd.to_numeric(df['High'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
+    low = pd.to_numeric(df['Low'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
 
     close = pd.Series(close.values, index=df.index)
     high = pd.Series(high.values, index=df.index)
     low = pd.Series(low.values, index=df.index)
 
+    # RSI
     try:
         rsi_indicator = ta.momentum.RSIIndicator(close=close, window=14, fillna=True)
         df['RSI'] = rsi_indicator.rsi()
     except Exception as e:
         df['RSI'] = np.nan
-        logger.warning(f"RSI calculation error: {e}")
+        logger.warning(f"RSI error: {e}")
 
+    # SMA50
     df['SMA50'] = close.rolling(window=50, min_periods=1).mean()
 
+    # MACD
     try:
         macd_indicator = ta.trend.MACD(close=close, window_slow=26, window_fast=12, window_sign=9, fillna=True)
         df['MACD'] = macd_indicator.macd()
         df['MACD_signal'] = macd_indicator.macd_signal()
     except Exception as e:
         df['MACD'] = df['MACD_signal'] = np.nan
-        logger.warning(f"MACD calculation error: {e}")
+        logger.warning(f"MACD error: {e}")
 
+    # ATR
     try:
         atr_indicator = ta.volatility.AverageTrueRange(high=high, low=low, close=close, window=14, fillna=True)
         df['ATR'] = atr_indicator.average_true_range()
     except Exception as e:
         df['ATR'] = np.nan
-        logger.warning(f"ATR calculation error: {e}")
+        logger.warning(f"ATR error: {e}")
 
     return df
 
 def predict_growth(df):
+    if 'Close' not in df.columns:
+        logger.warning("predict_growth: 'Close' column missing")
+        return 0.0
     df_tail = df.tail(10).dropna(subset=['Close'])
     if len(df_tail) < 5:
         return 0.0
@@ -174,9 +174,6 @@ def generate_signal(df):
 def analyze_ticker(ticker, period, interval):
     df = get_data(ticker, period=period, interval=interval)
     if df is None or df.empty:
-        return None
-    if 'Close' not in df.columns:
-        logger.warning(f"{ticker} data missing 'Close' column")
         return None
     
     df = add_indicators(df)
@@ -285,7 +282,7 @@ if results:
     selected_ticker = st.selectbox("Seleziona titolo per dettagli:", df_filtered['Ticker'].tolist())
 
     df_chart = get_data(selected_ticker, period=period, interval=interval)
-    if df_chart is not None and not df_chart.empty:
+    if df_chart is not None:
         df_chart = add_indicators(df_chart)
 
         fig = go.Figure()
@@ -305,6 +302,8 @@ if results:
         )
 
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning(f"Nessun dato disponibile per il ticker {selected_ticker}.")
 
     if report_enabled:
         filename = f"nasdaq_report_{today_str}.csv"
