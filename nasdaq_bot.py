@@ -77,10 +77,13 @@ def get_nasdaq_tickers():
 def get_data(ticker, period="3mo", interval="1d"):
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False)
-        df.dropna(inplace=True)
-        if 'Close' not in df.columns:
-            logger.warning(f"'Close' column missing in data for {ticker}")
+        if df.empty:
+            logger.warning(f"No data for {ticker}")
             return None
+        if 'Close' not in df.columns or 'High' not in df.columns or 'Low' not in df.columns:
+            logger.warning(f"Missing columns in data for {ticker}")
+            return None
+        df = df.dropna(subset=['Close', 'High', 'Low'])
         if len(df) < 50:
             logger.warning(f"Not enough data for {ticker}")
             return None
@@ -92,16 +95,26 @@ def get_data(ticker, period="3mo", interval="1d"):
 def add_indicators(df):
     df = df.copy()
 
-    # Conversione sicura in Series 1D con valori numerici
+    # Verifica che 'Close', 'High', 'Low' siano colonne valide e Series pandas
+    if not all(col in df.columns for col in ['Close', 'High', 'Low']):
+        logger.warning("DataFrame missing required columns.")
+        return df
+
+    for col in ['Close', 'High', 'Low']:
+        if not isinstance(df[col], pd.Series):
+            logger.warning(f"Column {col} is not a pandas Series.")
+            return df
+
+    # Conversione sicura in numeric e fillna con forward e backward fill
     close = pd.to_numeric(df['Close'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
     high = pd.to_numeric(df['High'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
     low = pd.to_numeric(df['Low'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
 
+    # Assicurati che siano pandas Series con l’indice originale
     close = pd.Series(close.values, index=df.index)
     high = pd.Series(high.values, index=df.index)
     low = pd.Series(low.values, index=df.index)
 
-    # RSI
     try:
         rsi_indicator = ta.momentum.RSIIndicator(close=close, window=14, fillna=True)
         df['RSI'] = rsi_indicator.rsi()
@@ -109,10 +122,8 @@ def add_indicators(df):
         df['RSI'] = np.nan
         logger.warning(f"RSI error: {e}")
 
-    # SMA50
     df['SMA50'] = close.rolling(window=50, min_periods=1).mean()
 
-    # MACD
     try:
         macd_indicator = ta.trend.MACD(close=close, window_slow=26, window_fast=12, window_sign=9, fillna=True)
         df['MACD'] = macd_indicator.macd()
@@ -121,7 +132,6 @@ def add_indicators(df):
         df['MACD'] = df['MACD_signal'] = np.nan
         logger.warning(f"MACD error: {e}")
 
-    # ATR
     try:
         atr_indicator = ta.volatility.AverageTrueRange(high=high, low=low, close=close, window=14, fillna=True)
         df['ATR'] = atr_indicator.average_true_range()
@@ -132,9 +142,6 @@ def add_indicators(df):
     return df
 
 def predict_growth(df):
-    if 'Close' not in df.columns:
-        logger.warning("predict_growth: 'Close' column missing")
-        return 0.0
     df_tail = df.tail(10).dropna(subset=['Close'])
     if len(df_tail) < 5:
         return 0.0
@@ -175,7 +182,7 @@ def analyze_ticker(ticker, period, interval):
     df = get_data(ticker, period=period, interval=interval)
     if df is None or df.empty:
         return None
-    
+
     df = add_indicators(df)
 
     prediction = predict_growth(df)
@@ -282,28 +289,25 @@ if results:
     selected_ticker = st.selectbox("Seleziona titolo per dettagli:", df_filtered['Ticker'].tolist())
 
     df_chart = get_data(selected_ticker, period=period, interval=interval)
-    if df_chart is not None:
-        df_chart = add_indicators(df_chart)
+    df_chart = add_indicators(df_chart)
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['Close'], mode='lines', name='Close'))
-        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA50'], mode='lines', name='SMA50'))
-        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MACD'], mode='lines', name='MACD'))
-        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MACD_signal'], mode='lines', name='MACD Signal'))
-        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['RSI'], mode='lines', name='RSI', yaxis="y2"))
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['Close'], mode='lines', name='Close'))
+    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA50'], mode='lines', name='SMA50'))
+    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MACD'], mode='lines', name='MACD'))
+    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MACD_signal'], mode='lines', name='MACD Signal'))
+    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['RSI'], mode='lines', name='RSI', yaxis="y2"))
 
-        fig.update_layout(
-            title=f"Grafici dettagliati per {selected_ticker}",
-            xaxis_title="Data",
-            yaxis_title="Prezzo / Valore",
-            yaxis=dict(domain=[0, 0.7]),
-            yaxis2=dict(domain=[0.7, 1], overlaying='y', side='right'),
-            legend=dict(orientation="h")
-        )
+    fig.update_layout(
+        title=f"Grafici dettagliati per {selected_ticker}",
+        xaxis_title="Data",
+        yaxis_title="Prezzo / Valore",
+        yaxis=dict(domain=[0, 0.7]),
+        yaxis2=dict(domain=[0.7, 1], overlaying='y', side='right'),
+        legend=dict(orientation="h")
+    )
 
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning(f"Nessun dato disponibile per il ticker {selected_ticker}.")
+    st.plotly_chart(fig, use_container_width=True)
 
     if report_enabled:
         filename = f"nasdaq_report_{today_str}.csv"
