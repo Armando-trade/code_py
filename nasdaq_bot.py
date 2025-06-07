@@ -151,22 +151,48 @@ def analyze_ticker(ticker, period, interval):
     df = get_data(ticker, period=period, interval=interval)
     if df is None or df.empty:
         return None
-    df = add_indicators(df)
-    if df[['RSI','SMA50','MACD','MACD_signal','ATR']].isnull().values.any():
-        return None
-    prediction = predict_growth(df)
-    risk = classify_risk(df)
-    signal = generate_signal(df)
-    price = round(df['Close'].iloc[-1], 2)
-    return {
-        'Ticker': ticker,
-        'Price': price,
-        'Signal': signal,
-        'Prediction (%)': prediction,
-        'Risk': risk,
-        'RSI': round(df['RSI'].iloc[-1], 2),
-        'ATR': round(df['ATR'].iloc[-1], 2)
-    }
+   def add_indicators(df):
+    df = df.copy()
+
+    # Conversione sicura in Series 1D con valori numerici
+    close = pd.to_numeric(df['Close'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
+    high = pd.to_numeric(df['High'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
+    low = pd.to_numeric(df['Low'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
+
+    close = pd.Series(close.values, index=df.index)
+    high = pd.Series(high.values, index=df.index)
+    low = pd.Series(low.values, index=df.index)
+
+    # RSI
+    try:
+        rsi_indicator = ta.momentum.RSIIndicator(close=close, window=14, fillna=True)
+        df['RSI'] = rsi_indicator.rsi()
+    except Exception as e:
+        df['RSI'] = np.nan
+        logger.warning(f"RSI error: {e}")
+
+    # SMA50
+    df['SMA50'] = close.rolling(window=50, min_periods=1).mean()
+
+    # MACD
+    try:
+        macd_indicator = ta.trend.MACD(close=close, window_slow=26, window_fast=12, window_sign=9, fillna=True)
+        df['MACD'] = macd_indicator.macd()
+        df['MACD_signal'] = macd_indicator.macd_signal()
+    except Exception as e:
+        df['MACD'] = df['MACD_signal'] = np.nan
+        logger.warning(f"MACD error: {e}")
+
+    # ATR
+    try:
+        atr_indicator = ta.volatility.AverageTrueRange(high=high, low=low, close=close, window=14, fillna=True)
+        df['ATR'] = atr_indicator.average_true_range()
+    except Exception as e:
+        df['ATR'] = np.nan
+        logger.warning(f"ATR error: {e}")
+
+    return df
+
 
 def save_report_csv(df, filename):
     df.to_csv(filename, index=False)
