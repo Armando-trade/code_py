@@ -1,8 +1,8 @@
-streamlit
 yfinance
 pandas
 numpy
 ta
 scikit-learn
+streamlit
 plotly
-python-telegram-bot
+requests
