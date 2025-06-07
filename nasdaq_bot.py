@@ -1,5 +1,5 @@
 # 📈 NASDAQ ANALYSIS BOT – con previsione e classificazione rischio
-# Requisiti: yfinance, pandas, ta, scikit-learn, streamlit, plotly
+# Requisiti: yfinance, pandas, ta, scikit-learn, streamlit, plotly, lxml, html5lib, beautifulsoup4
 
 import yfinance as yf
 import pandas as pd
@@ -8,14 +8,13 @@ import ta
 from sklearn.linear_model import LinearRegression
 import streamlit as st
 import plotly.graph_objs as go
-import datetime
 
 # -------------------------------
 # FUNZIONI PRINCIPALI
 # -------------------------------
 
 def get_nasdaq_tickers():
-    # Puoi sostituire con un CSV di tickers reali NASDAQ completi
+    # Lista tickers NASDAQ-100 da Wikipedia (possibile fallback)
     table = pd.read_html("https://en.wikipedia.org/wiki/NASDAQ-100")[4]
     return table['Ticker'].tolist()
 
@@ -30,22 +29,30 @@ def get_data(ticker):
         return None
 
 def add_indicators(df):
-    df['RSI'] = ta.momentum.RSIIndicator(df['Close']).rsi()
-    df['SMA50'] = df['Close'].rolling(window=50).mean()
-    df['MACD'] = ta.trend.MACD(df['Close']).macd()
-    df['MACD_signal'] = ta.trend.MACD(df['Close']).macd_signal()
-    df['Volatility'] = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close']).average_true_range()
+    if df is None or df.empty:
+        return None
+    close = df['Close'].dropna()
+    if close.empty:
+        return None
+    df = df.loc[close.index]
+
+    df['RSI'] = ta.momentum.RSIIndicator(close).rsi()
+    df['SMA50'] = close.rolling(window=50).mean()
+    macd = ta.trend.MACD(close)
+    df['MACD'] = macd.macd()
+    df['MACD_signal'] = macd.macd_signal()
+    df['Volatility'] = ta.volatility.AverageTrueRange(df['High'], df['Low'], close).average_true_range()
     return df
 
 def predict_growth(df):
-    df = df.tail(10).copy()
-    if len(df) < 5:
+    if df is None or len(df) < 5:
         return 0
+    df = df.tail(10).copy()
     X = np.arange(len(df)).reshape(-1, 1)
     y = df['Close'].values.reshape(-1, 1)
     model = LinearRegression().fit(X, y)
     slope = model.coef_[0][0]
-    pct_growth = (slope / y.mean()) * 5  # stima crescita in % nei prossimi 5 giorni
+    pct_growth = (slope / y.mean()) * 5  # crescita stimata prossimi 5 giorni
     return round(pct_growth * 100, 2)
 
 def classify_risk(df):
@@ -63,7 +70,7 @@ def analyze_ticker(ticker):
     if df is None:
         return None
     df = add_indicators(df)
-    if df.isna().any().any():
+    if df is None or df.isna().any().any():
         return None
     prediction = predict_growth(df)
     risk = classify_risk(df)
@@ -105,7 +112,7 @@ if results:
     selected = st.selectbox("📊 Vedi dettagli per titolo:", df_res['Ticker'].tolist())
     df_chart = get_data(selected)
     df_chart = add_indicators(df_chart)
-    
+
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['Close'], name='Close'))
     fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA50'], name='SMA50'))
