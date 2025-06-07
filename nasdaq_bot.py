@@ -87,13 +87,27 @@ def get_data(ticker, period="3mo", interval="1d"):
         return None
 
 def add_indicators(df):
-    close = df['Close']
     df = df.copy()
-    df['RSI'] = ta.momentum.rsi(close, window=14, fillna=False)
-    df['SMA50'] = close.rolling(window=50).mean()
-    df['MACD'] = ta.trend.macd(close, fillna=False)
-    df['MACD_signal'] = ta.trend.macd_signal(close, fillna=False)
-    df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], close, window=14, fillna=False)
+    close = df['Close'].astype(float).fillna(method='ffill').fillna(method='bfill')
+    high = df['High'].astype(float).fillna(method='ffill').fillna(method='bfill')
+    low = df['Low'].astype(float).fillna(method='ffill').fillna(method='bfill')
+
+    # RSI
+    rsi_indicator = ta.momentum.RSIIndicator(close=close, window=14, fillna=True)
+    df['RSI'] = rsi_indicator.rsi()
+
+    # SMA50
+    df['SMA50'] = close.rolling(window=50, min_periods=1).mean()
+
+    # MACD
+    macd_indicator = ta.trend.MACD(close=close, window_slow=26, window_fast=12, window_sign=9, fillna=True)
+    df['MACD'] = macd_indicator.macd()
+    df['MACD_signal'] = macd_indicator.macd_signal()
+
+    # ATR
+    atr_indicator = ta.volatility.AverageTrueRange(high=high, low=low, close=close, window=14, fillna=True)
+    df['ATR'] = atr_indicator.average_true_range()
+
     return df
 
 def predict_growth(df):
@@ -135,10 +149,10 @@ def generate_signal(df):
 
 def analyze_ticker(ticker, period, interval):
     df = get_data(ticker, period=period, interval=interval)
-    if df is None:
+    if df is None or df.empty:
         return None
     df = add_indicators(df)
-    if df[['RSI','SMA50','MACD','MACD_signal','ATR']].isna().any().any():
+    if df[['RSI','SMA50','MACD','MACD_signal','ATR']].isnull().values.any():
         return None
     prediction = predict_growth(df)
     risk = classify_risk(df)
@@ -170,7 +184,7 @@ def append_to_history(df, folder="history"):
     combined_df.to_csv(path, index=False)
     logger.info(f"History updated: {path}")
 
-def notify_signals(df):
+def notify_signals(df, telegram_enabled=False, email_enabled=False):
     buy_tickers = df[df['Signal'] == 'BUY']['Ticker'].tolist()
     sell_tickers = df[df['Signal'] == 'SELL']['Ticker'].tolist()
     msg_parts = []
@@ -180,8 +194,9 @@ def notify_signals(df):
         msg_parts.append(f"🔴 SELL signals: {', '.join(sell_tickers)}")
     message = "\n".join(msg_parts)
     if message:
-        send_telegram_message(message)
-        if EMAIL_ENABLED:
+        if telegram_enabled:
+            send_telegram_message(message)
+        if email_enabled and EMAIL_ENABLED:
             send_email("NASDAQ Bot Alerts", message)
 
 # --- Streamlit App ---
@@ -205,22 +220,24 @@ progress = st.progress(0)
 status_text = st.empty()
 
 today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-for i, ticker in enumerate(nasdaq_tickers):
-    status_text.text(f"Analizzando {ticker} ({i+1}/{len(nasdaq_tickers)})...")
-    res = analyze_ticker(ticker, period, interval)
-    if res:
-        res['Date'] = today_str
-        results.append(res)
-    progress.progress((i+1)/len(nasdaq_tickers))
+
+with st.spinner("Analizzando tickers..."):
+    for i, ticker in enumerate(nasdaq_tickers):
+        status_text.text(f"Analizzando {ticker} ({i+1}/{len(nasdaq_tickers)})...")
+        res = analyze_ticker(ticker, period, interval)
+        if res:
+            res['Date'] = today_str
+            results.append(res)
+        progress.progress((i+1)/len(nasdaq_tickers))
 
 status_text.text("Analisi completata!")
 
 if results:
     df_res = pd.DataFrame(results)
-    
+
     # Salva storico mensile
     append_to_history(df_res)
-    
+
     # Riepilogo
     st.markdown("### 📊 Riepilogo Segnali")
     buy_count = (df_res['Signal'] == 'BUY').sum()
@@ -257,29 +274,22 @@ if results:
         title=f"Grafici dettagliati per {selected_ticker}",
         xaxis_title="Data",
         yaxis_title="Prezzo / Valore",
-        yaxis=dict(domain=[0, 0.85]),
-        yaxis2=dict(title="RSI", domain=[0.85, 1], overlaying='y', side='right'),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        yaxis=dict(domain=[0, 0.7]),
+        yaxis2=dict(domain=[0.7, 1], overlaying='y', side='right'),
+        legend=dict(orientation="h")
     )
-    st.plotly_chart(fig, use_container_width=True)
 
-    # Notifiche
-    if telegram_enabled or email_enabled:
-        notify_signals(df_res)
+    st.plotly_chart(fig, use_container_width=True)
 
     if report_enabled:
         filename = f"nasdaq_report_{today_str}.csv"
         save_report_csv(df_res, filename)
-        with open(filename, "rb") as f:
-            st.download_button(
-                label="Scarica report CSV",
-                data=f,
-                file_name=filename,
-                mime="text/csv"
-            )
+        st.success(f"Report salvato: {filename}")
+
+    notify_signals(df_res, telegram_enabled=telegram_enabled, email_enabled=email_enabled)
+
 else:
-    st.warning("Nessun titolo analizzato con successo. Riprova più tardi.")
+    st.warning("Nessun dato disponibile o errore nell'analisi.")
 
 if auto_refresh:
     st.experimental_rerun()
-
