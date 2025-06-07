@@ -63,12 +63,14 @@ def send_email(subject, body):
         logger.error(f"Email sending failed: {e}")
 
 @st.cache_data(ttl=3600)
-def get_nasdaq_tickers():
-    url = "https://it.wikipedia.org/wiki/NASDAQ-100"
+def get_nasdaq_tickers(limit=200):
+    # URL ufficiale lista NASDAQ
+    url = "ftp://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqlisted.txt"
     try:
-        df = pd.read_csv(url, sep='|')
-        df = df[:-1]  # rimuove la riga footer
+        df = pd.read_csv(url, sep="|")
         tickers = df['Symbol'].tolist()
+        # Escludo righe tipo test o invalidi
+        tickers = [t for t in tickers if t.isalpha()]
         if len(tickers) > limit:
             tickers = tickers[:limit]
         logger.info(f"Tickers NASDAQ caricati: {len(tickers)}")
@@ -84,7 +86,7 @@ def get_data(ticker, period="3mo", interval="1d"):
         if df.empty:
             logger.warning(f"No data for {ticker}")
             return None
-        if 'Close' not in df.columns or 'High' not in df.columns or 'Low' not in df.columns:
+        if not {'Close', 'High', 'Low'}.issubset(df.columns):
             logger.warning(f"Missing columns in data for {ticker}")
             return None
         df = df.dropna(subset=['Close', 'High', 'Low'])
@@ -98,47 +100,21 @@ def get_data(ticker, period="3mo", interval="1d"):
 
 def add_indicators(df):
     df = df.copy()
-
-    if not all(col in df.columns for col in ['Close', 'High', 'Low']):
-        logger.warning("DataFrame missing required columns.")
-        return df
-
-    for col in ['Close', 'High', 'Low']:
-        if not isinstance(df[col], pd.Series):
-            logger.warning(f"Column {col} is not a pandas Series.")
-            return df
-
     close = pd.to_numeric(df['Close'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
     high = pd.to_numeric(df['High'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
     low = pd.to_numeric(df['Low'], errors='coerce').fillna(method='ffill').fillna(method='bfill')
 
-    close = pd.Series(close.values, index=df.index)
-    high = pd.Series(high.values, index=df.index)
-    low = pd.Series(low.values, index=df.index)
-
-    try:
-        rsi_indicator = ta.momentum.RSIIndicator(close=close, window=14, fillna=True)
-        df['RSI'] = rsi_indicator.rsi()
-    except Exception as e:
-        df['RSI'] = np.nan
-        logger.warning(f"RSI error: {e}")
+    rsi_indicator = ta.momentum.RSIIndicator(close=close, window=14, fillna=True)
+    df['RSI'] = rsi_indicator.rsi()
 
     df['SMA50'] = close.rolling(window=50, min_periods=1).mean()
 
-    try:
-        macd_indicator = ta.trend.MACD(close=close, window_slow=26, window_fast=12, window_sign=9, fillna=True)
-        df['MACD'] = macd_indicator.macd()
-        df['MACD_signal'] = macd_indicator.macd_signal()
-    except Exception as e:
-        df['MACD'] = df['MACD_signal'] = np.nan
-        logger.warning(f"MACD error: {e}")
+    macd_indicator = ta.trend.MACD(close=close, window_slow=26, window_fast=12, window_sign=9, fillna=True)
+    df['MACD'] = macd_indicator.macd()
+    df['MACD_signal'] = macd_indicator.macd_signal()
 
-    try:
-        atr_indicator = ta.volatility.AverageTrueRange(high=high, low=low, close=close, window=14, fillna=True)
-        df['ATR'] = atr_indicator.average_true_range()
-    except Exception as e:
-        df['ATR'] = np.nan
-        logger.warning(f"ATR error: {e}")
+    atr_indicator = ta.volatility.AverageTrueRange(high=high, low=low, close=close, window=14, fillna=True)
+    df['ATR'] = atr_indicator.average_true_range()
 
     return df
 
@@ -157,12 +133,9 @@ def predict_growth(df):
     return round(pct_growth, 2)
 
 def classify_risk(df):
-    try:
-        latest = df.iloc[-1]
-        atr = latest['ATR']
-        rsi = latest['RSI']
-    except Exception:
-        return "Insufficient data"
+    latest = df.iloc[-1]
+    atr = latest['ATR']
+    rsi = latest['RSI']
     if atr > 5 or rsi < 25 or rsi > 75:
         return "High"
     elif atr > 3 or rsi < 35 or rsi > 65:
@@ -185,7 +158,6 @@ def analyze_ticker(ticker, period, interval):
         return None
 
     df = add_indicators(df)
-
     prediction = predict_growth(df)
     risk = classify_risk(df)
     signal = generate_signal(df)
@@ -264,17 +236,14 @@ status_text.text("Analisi completata!")
 if results:
     df_res = pd.DataFrame(results)
 
-    # Salva storico mensile
     append_to_history(df_res)
 
-    # Riepilogo
     st.markdown("### 📊 Riepilogo Segnali")
     buy_count = (df_res['Signal'] == 'BUY').sum()
     sell_count = (df_res['Signal'] == 'SELL').sum()
     hold_count = (df_res['Signal'] == 'HOLD').sum()
     st.write(f"🟢 BUY: {buy_count} | 🔴 SELL: {sell_count} | ⚪ HOLD: {hold_count}")
 
-    # Filtri
     risk_filter = st.selectbox("Filtra per rischio:", options=["Tutti", "Low", "Medium", "High"])
     signal_filter = st.selectbox("Filtra per segnale:", options=["Tutti", "BUY", "HOLD", "SELL"])
 
@@ -287,28 +256,29 @@ if results:
     st.subheader("Tabella titoli")
     st.dataframe(df_filtered.sort_values(by='Prediction (%)', ascending=False), use_container_width=True)
 
-    selected_ticker = st.selectbox("Seleziona titolo per dettagli:", df_filtered['Ticker'].tolist())
+    if not df_filtered.empty:
+        selected_ticker = st.selectbox("Seleziona titolo per dettagli:", df_filtered['Ticker'].tolist())
 
-    df_chart = get_data(selected_ticker, period=period, interval=interval)
-    df_chart = add_indicators(df_chart)
+        df_chart = get_data(selected_ticker, period=period, interval=interval)
+        if df_chart is not None:
+            df_chart = add_indicators(df_chart)
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['Close'], mode='lines', name='Close'))
-    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA50'], mode='lines', name='SMA50'))
-    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MACD'], mode='lines', name='MACD'))
-    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MACD_signal'], mode='lines', name='MACD Signal'))
-    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['RSI'], mode='lines', name='RSI', yaxis="y2"))
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['Close'], mode='lines', name='Close'))
+            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA50'], mode='lines', name='SMA50'))
+            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MACD'], mode='lines', name='MACD'))
+            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MACD_signal'], mode='lines', name='MACD Signal'))
+            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['RSI'], mode='lines', name='RSI', yaxis="y2"))
 
-    fig.update_layout(
-        title=f"Grafici dettagliati per {selected_ticker}",
-        xaxis_title="Data",
-        yaxis_title="Prezzo / Valore",
-        yaxis=dict(domain=[0, 0.7]),
-        yaxis2=dict(domain=[0.7, 1], overlaying='y', side='right'),
-        legend=dict(orientation="h")
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(
+                title=f"Grafici dettagliati per {selected_ticker}",
+                xaxis_title="Data",
+                yaxis_title="Prezzo / Valore",
+                yaxis=dict(domain=[0, 0.7]),
+                yaxis2=dict(domain=[0.7, 1], overlaying='y', side='right'),
+                legend=dict(orientation="h")
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
     if report_enabled:
         filename = f"nasdaq_report_{today_str}.csv"
