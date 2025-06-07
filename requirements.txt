@@ -5,4 +5,4 @@ numpy
 ta
 scikit-learn
 plotly
-requests
+python-telegram-bot
