@@ -63,12 +63,14 @@ def send_email(subject, body):
         logger.error(f"Email sending failed: {e}")
 
 @st.cache_data(ttl=3600)
-def get_nasdaq_tickers():
+def get_nasdaq_tickers(limit=200):
     url = "ftp://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqlisted.txt"
     try:
         df = pd.read_csv(url, sep='|')
         df = df[:-1]  # rimuove la riga footer
         tickers = df['Symbol'].tolist()
+        if len(tickers) > limit:
+            tickers = tickers[:limit]
         logger.info(f"Tickers NASDAQ caricati: {len(tickers)}")
         return tickers
     except Exception as e:
@@ -240,7 +242,7 @@ with st.sidebar:
     interval = st.selectbox("Seleziona intervallo dati:", options=["1d","1wk","1mo"], index=0)
     auto_refresh = st.checkbox("Auto-refresh ogni 15 minuti", value=False)
 
-nasdaq_tickers = get_nasdaq_tickers()
+nasdaq_tickers = get_nasdaq_tickers(limit=200)
 
 results = []
 progress = st.progress(0)
