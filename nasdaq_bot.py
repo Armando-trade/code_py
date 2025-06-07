@@ -8,14 +8,26 @@ import plotly.graph_objs as go
 import datetime
 import logging
 import requests
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import os
 
-# --- Setup logging ---
+# --- Logging ---
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("NASDAQ_BOT")
 
-# --- Configurazione Telegram per notifiche ---
+# --- Telegram config ---
 TELEGRAM_BOT_TOKEN = st.secrets.get("telegram_bot_token", "")
 TELEGRAM_CHAT_ID = st.secrets.get("telegram_chat_id", "")
+
+# --- Email config ---
+EMAIL_ENABLED = st.secrets.get("email_enabled", False)
+EMAIL_SMTP_SERVER = st.secrets.get("email_smtp_server", "")
+EMAIL_SMTP_PORT = int(st.secrets.get("email_smtp_port", 587))
+EMAIL_ADDRESS = st.secrets.get("email_address", "")
+EMAIL_PASSWORD = st.secrets.get("email_password", "")
+EMAIL_RECEIVER = st.secrets.get("email_receiver", "")
 
 def send_telegram_message(message):
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
@@ -24,34 +36,54 @@ def send_telegram_message(message):
         try:
             response = requests.post(url, data=data)
             if response.status_code == 200:
-                logger.info("Messaggio Telegram inviato.")
+                logger.info("Telegram message sent.")
             else:
-                logger.warning(f"Telegram API errore: {response.text}")
+                logger.warning(f"Telegram error: {response.text}")
         except Exception as e:
-            logger.error(f"Errore invio Telegram: {e}")
+            logger.error(f"Telegram sending failed: {e}")
 
-# --- Funzioni analisi ---
+def send_email(subject, body):
+    if not EMAIL_ENABLED:
+        logger.info("Email alert disabled.")
+        return
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = EMAIL_ADDRESS
+        msg['To'] = EMAIL_RECEIVER
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
 
+        server = smtplib.SMTP(EMAIL_SMTP_SERVER, EMAIL_SMTP_PORT)
+        server.starttls()
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        logger.info("Email sent.")
+    except Exception as e:
+        logger.error(f"Email sending failed: {e}")
+
+@st.cache_data(ttl=600)
 def get_nasdaq_tickers():
     try:
         table = pd.read_html("https://en.wikipedia.org/wiki/NASDAQ-100")[4]
         tickers = table['Ticker'].tolist()
-        logger.info(f"Ticker scaricati: {len(tickers)}")
+        logger.info(f"Tickers fetched: {len(tickers)}")
         return tickers
     except Exception as e:
-        st.error(f"Errore caricamento tickers NASDAQ: {e}")
+        st.error(f"Could not load NASDAQ tickers: {e}")
         return []
 
-def get_data(ticker):
+@st.cache_data(ttl=600)
+def get_data(ticker, period="3mo", interval="1d"):
     try:
-        df = yf.download(ticker, period="3mo", interval="1d", progress=False)
+        df = yf.download(ticker, period=period, interval=interval, progress=False)
         df.dropna(inplace=True)
         if len(df) < 50:
-            logger.warning(f"Dati insufficienti per {ticker}")
+            logger.warning(f"Not enough data for {ticker}")
             return None
         return df
     except Exception as e:
-        logger.warning(f"Errore download dati {ticker}: {e}")
+        logger.warning(f"Download error {ticker}: {e}")
         return None
 
 def add_indicators(df):
@@ -59,12 +91,9 @@ def add_indicators(df):
     df = df.copy()
     df['RSI'] = ta.momentum.rsi(close, window=14, fillna=False)
     df['SMA50'] = close.rolling(window=50).mean()
-    macd = ta.trend.macd(close, fillna=False)
-    macd_signal = ta.trend.macd_signal(close, fillna=False)
-    df['MACD'] = macd
-    df['MACD_signal'] = macd_signal
-    atr = ta.volatility.average_true_range(df['High'], df['Low'], close, window=14, fillna=False)
-    df['ATR'] = atr
+    df['MACD'] = ta.trend.macd(close, fillna=False)
+    df['MACD_signal'] = ta.trend.macd_signal(close, fillna=False)
+    df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], close, window=14, fillna=False)
     return df
 
 def predict_growth(df):
@@ -78,7 +107,7 @@ def predict_growth(df):
     avg_price = y.mean()
     if avg_price == 0:
         return 0.0
-    pct_growth = (slope / avg_price) * 5 * 100  # previsione % 5 giorni
+    pct_growth = (slope / avg_price) * 5 * 100
     return round(pct_growth, 2)
 
 def classify_risk(df):
@@ -87,13 +116,13 @@ def classify_risk(df):
         atr = latest['ATR']
         rsi = latest['RSI']
     except Exception:
-        return "Dati insufficienti"
+        return "Insufficient data"
     if atr > 5 or rsi < 25 or rsi > 75:
-        return "Alto"
+        return "High"
     elif atr > 3 or rsi < 35 or rsi > 65:
-        return "Medio"
+        return "Medium"
     else:
-        return "Basso"
+        return "Low"
 
 def generate_signal(df):
     latest = df.iloc[-1]
@@ -104,8 +133,8 @@ def generate_signal(df):
     else:
         return "HOLD"
 
-def analyze_ticker(ticker):
-    df = get_data(ticker)
+def analyze_ticker(ticker, period, interval):
+    df = get_data(ticker, period=period, interval=interval)
     if df is None:
         return None
     df = add_indicators(df)
@@ -127,35 +156,60 @@ def analyze_ticker(ticker):
 
 def save_report_csv(df, filename):
     df.to_csv(filename, index=False)
-    logger.info(f"Report salvato: {filename}")
+    logger.info(f"Report saved: {filename}")
+
+def append_to_history(df, folder="history"):
+    os.makedirs(folder, exist_ok=True)
+    month_str = datetime.datetime.now().strftime("%Y-%m")
+    path = os.path.join(folder, f"signals_{month_str}.csv")
+    if os.path.exists(path):
+        existing_df = pd.read_csv(path)
+        combined_df = pd.concat([existing_df, df], ignore_index=True).drop_duplicates(subset=['Ticker', 'Date'])
+    else:
+        combined_df = df
+    combined_df.to_csv(path, index=False)
+    logger.info(f"History updated: {path}")
 
 def notify_signals(df):
     buy_tickers = df[df['Signal'] == 'BUY']['Ticker'].tolist()
     sell_tickers = df[df['Signal'] == 'SELL']['Ticker'].tolist()
+    msg_parts = []
     if buy_tickers:
-        send_telegram_message(f"Segnali BUY: {', '.join(buy_tickers)}")
+        msg_parts.append(f"🟢 BUY signals: {', '.join(buy_tickers)}")
     if sell_tickers:
-        send_telegram_message(f"Segnali SELL: {', '.join(sell_tickers)}")
+        msg_parts.append(f"🔴 SELL signals: {', '.join(sell_tickers)}")
+    message = "\n".join(msg_parts)
+    if message:
+        send_telegram_message(message)
+        if EMAIL_ENABLED:
+            send_email("NASDAQ Bot Alerts", message)
 
-# --- Streamlit UI ---
+# --- Streamlit App ---
 
 st.set_page_config(page_title="Professional NASDAQ Investment Bot FULL", layout="wide")
 st.title("📈 Professional NASDAQ Investment Bot FULL")
 
-st.sidebar.header("Configurazione")
-telegram_enabled = st.sidebar.checkbox("Abilita notifiche Telegram (configura secrets)", value=False)
-report_enabled = st.sidebar.checkbox("Genera report CSV giornaliero", value=True)
+with st.sidebar:
+    st.header("Configurazione")
+    telegram_enabled = st.checkbox("Abilita notifiche Telegram", value=False)
+    email_enabled = st.checkbox("Abilita notifiche Email", value=False)
+    report_enabled = st.checkbox("Genera report CSV giornaliero", value=True)
+    period = st.selectbox("Seleziona periodo dati:", options=["1mo","3mo","6mo","1y","2y"], index=1)
+    interval = st.selectbox("Seleziona intervallo dati:", options=["1d","1wk","1mo"], index=0)
+    auto_refresh = st.checkbox("Auto-refresh ogni 15 minuti", value=False)
 
 nasdaq_tickers = get_nasdaq_tickers()
-results = []
 
+results = []
 progress = st.progress(0)
 status_text = st.empty()
 
+today_str = datetime.datetime.now().strftime("%Y-%m-%d")
 for i, ticker in enumerate(nasdaq_tickers):
     status_text.text(f"Analizzando {ticker} ({i+1}/{len(nasdaq_tickers)})...")
-    res = analyze_ticker(ticker)
+    res = analyze_ticker(ticker, period, interval)
     if res:
+        res['Date'] = today_str
         results.append(res)
     progress.progress((i+1)/len(nasdaq_tickers))
 
@@ -163,7 +217,19 @@ status_text.text("Analisi completata!")
 
 if results:
     df_res = pd.DataFrame(results)
-    risk_filter = st.selectbox("Filtra per rischio:", options=["Tutti", "Basso", "Medio", "Alto"])
+    
+    # Salva storico mensile
+    append_to_history(df_res)
+    
+    # Riepilogo
+    st.markdown("### 📊 Riepilogo Segnali")
+    buy_count = (df_res['Signal'] == 'BUY').sum()
+    sell_count = (df_res['Signal'] == 'SELL').sum()
+    hold_count = (df_res['Signal'] == 'HOLD').sum()
+    st.write(f"🟢 BUY: {buy_count} | 🔴 SELL: {sell_count} | ⚪ HOLD: {hold_count}")
+
+    # Filtri
+    risk_filter = st.selectbox("Filtra per rischio:", options=["Tutti", "Low", "Medium", "High"])
     signal_filter = st.selectbox("Filtra per segnale:", options=["Tutti", "BUY", "HOLD", "SELL"])
 
     df_filtered = df_res
@@ -173,11 +239,11 @@ if results:
         df_filtered = df_filtered[df_filtered['Signal'] == signal_filter]
 
     st.subheader("Tabella titoli")
-    st.dataframe(df_filtered.sort_values(by='Prediction (%)', ascending=False))
+    st.dataframe(df_filtered.sort_values(by='Prediction (%)', ascending=False), use_container_width=True)
 
     selected_ticker = st.selectbox("Seleziona titolo per dettagli:", df_filtered['Ticker'].tolist())
 
-    df_chart = get_data(selected_ticker)
+    df_chart = get_data(selected_ticker, period=period, interval=interval)
     df_chart = add_indicators(df_chart)
 
     fig = go.Figure()
@@ -191,16 +257,18 @@ if results:
         title=f"Grafici dettagliati per {selected_ticker}",
         xaxis_title="Data",
         yaxis_title="Prezzo / Valore",
-        yaxis2=dict(title="RSI", overlaying='y', side='right')
+        yaxis=dict(domain=[0, 0.85]),
+        yaxis2=dict(title="RSI", domain=[0.85, 1], overlaying='y', side='right'),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    if telegram_enabled:
+    # Notifiche
+    if telegram_enabled or email_enabled:
         notify_signals(df_res)
 
     if report_enabled:
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
-        filename = f"nasdaq_report_{today}.csv"
+        filename = f"nasdaq_report_{today_str}.csv"
         save_report_csv(df_res, filename)
         with open(filename, "rb") as f:
             st.download_button(
@@ -211,3 +279,7 @@ if results:
             )
 else:
     st.warning("Nessun titolo analizzato con successo. Riprova più tardi.")
+
+if auto_refresh:
+    st.experimental_rerun()
+
