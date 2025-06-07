@@ -1,11 +1,8 @@
+streamlit
 yfinance
 pandas
 numpy
 ta
 scikit-learn
-streamlit
 plotly
-lxml
-html5lib
-beautifulsoup4
-ta
+requests
