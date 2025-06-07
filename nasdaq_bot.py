@@ -7,7 +7,6 @@ import streamlit as st
 import plotly.graph_objs as go
 import datetime
 import logging
-import os
 import requests
 
 # --- Setup logging ---
@@ -57,13 +56,15 @@ def get_data(ticker):
 
 def add_indicators(df):
     close = df['Close']
-    df['RSI'] = ta.momentum.RSIIndicator(close, window=14).rsi()
+    df = df.copy()
+    df['RSI'] = ta.momentum.rsi(close, window=14, fillna=False)
     df['SMA50'] = close.rolling(window=50).mean()
-    macd = ta.trend.MACD(close)
-    df['MACD'] = macd.macd()
-    df['MACD_signal'] = macd.macd_signal()
-    atr = ta.volatility.AverageTrueRange(df['High'], df['Low'], close)
-    df['ATR'] = atr.average_true_range()
+    macd = ta.trend.macd(close, fillna=False)
+    macd_signal = ta.trend.macd_signal(close, fillna=False)
+    df['MACD'] = macd
+    df['MACD_signal'] = macd_signal
+    atr = ta.volatility.average_true_range(df['High'], df['Low'], close, window=14, fillna=False)
+    df['ATR'] = atr
     return df
 
 def predict_growth(df):
@@ -124,12 +125,10 @@ def analyze_ticker(ticker):
         'ATR': round(df['ATR'].iloc[-1], 2)
     }
 
-# --- Funzione per creare report CSV ---
 def save_report_csv(df, filename):
     df.to_csv(filename, index=False)
     logger.info(f"Report salvato: {filename}")
 
-# --- Funzione per inviare alert Telegram su BUY/SELL ---
 def notify_signals(df):
     buy_tickers = df[df['Signal'] == 'BUY']['Ticker'].tolist()
     sell_tickers = df[df['Signal'] == 'SELL']['Ticker'].tolist()
@@ -212,5 +211,3 @@ if results:
             )
 else:
     st.warning("Nessun titolo analizzato con successo. Riprova più tardi.")
-
-
