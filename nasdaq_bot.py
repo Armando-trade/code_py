@@ -1,6 +1,3 @@
-# 📈 NASDAQ ANALYSIS BOT – con previsione e classificazione rischio
-# Requisiti: yfinance, pandas, ta, scikit-learn, streamlit, plotly, lxml, html5lib, beautifulsoup4
-
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -9,64 +6,84 @@ from sklearn.linear_model import LinearRegression
 import streamlit as st
 import plotly.graph_objs as go
 
-# -------------------------------
-# FUNZIONI PRINCIPALI
-# -------------------------------
-
 def get_nasdaq_tickers():
-    # Lista tickers NASDAQ-100 da Wikipedia (possibile fallback)
-    table = pd.read_html("https://en.wikipedia.org/wiki/NASDAQ-100")[4]
-    return table['Ticker'].tolist()
+    try:
+        table = pd.read_html("https://en.wikipedia.org/wiki/NASDAQ-100")[4]
+        return table['Ticker'].tolist()
+    except Exception as e:
+        st.error(f"Errore caricamento tickers NASDAQ: {e}")
+        return []
 
 def get_data(ticker):
     try:
         df = yf.download(ticker, period="3mo", interval="1d", progress=False)
-        if len(df) < 20:
-            return None
         df.dropna(inplace=True)
+        if df.shape[0] < 20:
+            return None
         return df
-    except:
+    except Exception as e:
+        st.warning(f"Errore download dati {ticker}: {e}")
         return None
 
 def add_indicators(df):
     if df is None or df.empty:
         return None
-    
-    close = df['Close'].copy()
-    close = close.astype(float).dropna()
+
+    # Assicurati che Close sia serie 1D e senza NaN
+    close = df['Close'].dropna()
     if close.empty:
         return None
-    
-    df = df.loc[close.index]  # sincronizza indice
-    
-    # Calcolo indicatori tecnici
-    rsi_indicator = ta.momentum.RSIIndicator(close)
-    df['RSI'] = rsi_indicator.rsi()
-    
-    df['SMA50'] = close.rolling(window=50).mean()
-    macd = ta.trend.MACD(close)
-    df['MACD'] = macd.macd()
-    df['MACD_signal'] = macd.macd_signal()
-    
-    atr = ta.volatility.AverageTrueRange(df['High'], df['Low'], close)
-    df['Volatility'] = atr.average_true_range()
-    
+
+    # Calcolo RSI: usa array numpy per evitare problemi
+    try:
+        rsi_indicator = ta.momentum.RSIIndicator(close)
+        df.loc[close.index, 'RSI'] = rsi_indicator.rsi()
+    except Exception as e:
+        st.warning(f"Errore calcolo RSI: {e}")
+        df['RSI'] = np.nan
+
+    # SMA50
+    df.loc[close.index, 'SMA50'] = close.rolling(window=50).mean()
+
+    # MACD e MACD signal
+    try:
+        macd = ta.trend.MACD(close)
+        df.loc[close.index, 'MACD'] = macd.macd()
+        df.loc[close.index, 'MACD_signal'] = macd.macd_signal()
+    except Exception as e:
+        st.warning(f"Errore calcolo MACD: {e}")
+        df['MACD'] = np.nan
+        df['MACD_signal'] = np.nan
+
+    # Volatility (ATR)
+    try:
+        atr = ta.volatility.AverageTrueRange(df['High'], df['Low'], close)
+        df.loc[close.index, 'Volatility'] = atr.average_true_range()
+    except Exception as e:
+        st.warning(f"Errore calcolo ATR: {e}")
+        df['Volatility'] = np.nan
+
     return df
 
 def predict_growth(df):
     if df is None or len(df) < 5:
         return 0
-    df = df.tail(10).copy()
-    X = np.arange(len(df)).reshape(-1, 1)
-    y = df['Close'].values.reshape(-1, 1)
-    model = LinearRegression().fit(X, y)
+    df_tail = df.tail(10).dropna(subset=['Close'])
+    if df_tail.empty or len(df_tail) < 5:
+        return 0
+    X = np.arange(len(df_tail)).reshape(-1,1)
+    y = df_tail['Close'].values.reshape(-1,1)
+    model = LinearRegression().fit(X,y)
     slope = model.coef_[0][0]
-    pct_growth = (slope / y.mean()) * 5  # crescita stimata prossimi 5 giorni
+    pct_growth = (slope / y.mean()) * 5
     return round(pct_growth * 100, 2)
 
 def classify_risk(df):
-    vol = df['Volatility'].iloc[-1]
-    rsi = df['RSI'].iloc[-1]
+    try:
+        vol = df['Volatility'].iloc[-1]
+        rsi = df['RSI'].iloc[-1]
+    except Exception:
+        return "Dati insufficienti"
     if vol > 10 or rsi < 25 or rsi > 75:
         return "Super-Rischioso"
     elif vol > 5 or rsi < 35 or rsi > 65:
@@ -79,7 +96,7 @@ def analyze_ticker(ticker):
     if df is None:
         return None
     df = add_indicators(df)
-    if df is None or df.isna().any().any():
+    if df is None or df[['RSI','MACD','MACD_signal','Volatility']].isna().any().any():
         return None
     prediction = predict_growth(df)
     risk = classify_risk(df)
@@ -92,13 +109,9 @@ def analyze_ticker(ticker):
         'Price': round(df['Close'].iloc[-1], 2)
     }
 
-# -------------------------------
 # STREAMLIT DASHBOARD
-# -------------------------------
-
 st.set_page_config(page_title="NASDAQ Investment Bot", layout="wide")
 st.title("📈 NASDAQ Investment Bot – Rischio + Previsioni")
-st.write("Analisi automatica dei titoli NASDAQ, classificazione rischio e previsioni di crescita.")
 
 nasdaq_tickers = get_nasdaq_tickers()
 results = []
@@ -129,4 +142,3 @@ if results:
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.warning("Nessun titolo analizzato con successo. Riprova più tardi.")
-
