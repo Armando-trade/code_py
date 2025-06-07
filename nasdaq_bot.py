@@ -1,7 +1,7 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import ta
+import talib
 from sklearn.linear_model import LinearRegression
 import streamlit as st
 import plotly.graph_objs as go
@@ -29,36 +29,40 @@ def add_indicators(df):
     if df is None or df.empty:
         return None
 
-    # Assicurati che Close sia serie 1D e senza NaN
-    close = df['Close'].dropna()
-    if close.empty:
+    # Controllo che le colonne esistano
+    if not all(col in df.columns for col in ['Close', 'High', 'Low']):
         return None
 
-    # Calcolo RSI: usa array numpy per evitare problemi
+    close = df['Close'].values
+    high = df['High'].values
+    low = df['Low'].values
+
     try:
-        rsi_indicator = ta.momentum.RSIIndicator(close)
-        df.loc[close.index, 'RSI'] = rsi_indicator.rsi()
+        rsi = talib.RSI(close, timeperiod=14)
+        df['RSI'] = rsi
     except Exception as e:
         st.warning(f"Errore calcolo RSI: {e}")
         df['RSI'] = np.nan
 
-    # SMA50
-    df.loc[close.index, 'SMA50'] = close.rolling(window=50).mean()
-
-    # MACD e MACD signal
     try:
-        macd = ta.trend.MACD(close)
-        df.loc[close.index, 'MACD'] = macd.macd()
-        df.loc[close.index, 'MACD_signal'] = macd.macd_signal()
+        sma50 = talib.SMA(close, timeperiod=50)
+        df['SMA50'] = sma50
+    except Exception as e:
+        st.warning(f"Errore calcolo SMA50: {e}")
+        df['SMA50'] = np.nan
+
+    try:
+        macd, macd_signal, macd_hist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
+        df['MACD'] = macd
+        df['MACD_signal'] = macd_signal
     except Exception as e:
         st.warning(f"Errore calcolo MACD: {e}")
         df['MACD'] = np.nan
         df['MACD_signal'] = np.nan
 
-    # Volatility (ATR)
     try:
-        atr = ta.volatility.AverageTrueRange(df['High'], df['Low'], close)
-        df.loc[close.index, 'Volatility'] = atr.average_true_range()
+        atr = talib.ATR(high, low, close, timeperiod=14)
+        df['Volatility'] = atr
     except Exception as e:
         st.warning(f"Errore calcolo ATR: {e}")
         df['Volatility'] = np.nan
@@ -142,3 +146,4 @@ if results:
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.warning("Nessun titolo analizzato con successo. Riprova più tardi.")
+
