@@ -31,17 +31,26 @@ def get_data(ticker):
 def add_indicators(df):
     if df is None or df.empty:
         return None
-    close = df['Close'].dropna()
+    
+    close = df['Close'].copy()
+    close = close.astype(float).dropna()
     if close.empty:
         return None
-    df = df.loc[close.index]
-
-    df['RSI'] = ta.momentum.RSIIndicator(close).rsi()
+    
+    df = df.loc[close.index]  # sincronizza indice
+    
+    # Calcolo indicatori tecnici
+    rsi_indicator = ta.momentum.RSIIndicator(close)
+    df['RSI'] = rsi_indicator.rsi()
+    
     df['SMA50'] = close.rolling(window=50).mean()
     macd = ta.trend.MACD(close)
     df['MACD'] = macd.macd()
     df['MACD_signal'] = macd.macd_signal()
-    df['Volatility'] = ta.volatility.AverageTrueRange(df['High'], df['Low'], close).average_true_range()
+    
+    atr = ta.volatility.AverageTrueRange(df['High'], df['Low'], close)
+    df['Volatility'] = atr.average_true_range()
+    
     return df
 
 def predict_growth(df):
@@ -120,3 +129,4 @@ if results:
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.warning("Nessun titolo analizzato con successo. Riprova più tardi.")
+
