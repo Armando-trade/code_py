@@ -63,8 +63,8 @@ def send_email(subject, body):
         logger.error(f"Email sending failed: {e}")
 
 @st.cache_data(ttl=3600)
-def get_nasdaq_tickers(limit=200):
-    url = "ftp://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqlisted.txt"
+def get_nasdaq_tickers():
+    url = "https://it.wikipedia.org/wiki/NASDAQ-100"
     try:
         df = pd.read_csv(url, sep='|')
         df = df[:-1]  # rimuove la riga footer
